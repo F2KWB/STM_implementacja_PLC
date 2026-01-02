@@ -33,7 +33,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+//------------------------------------------------------------------------
+#define SCAN_CYCLE_MS 20  // Czas cyklu: 20ms (50 razy na sekundę)
+//------------------------------------------------------------------------
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -70,7 +72,9 @@ TON_Block Timer1 = { .PT = 2000 }; // Timer 2 sekundy
 bool last_M0 = false;
 bool last_Q = false;
 //---------------------------------------------------------
-
+//----------------------------------------------------------
+uint32_t last_scan_tick = 0;
+//------------------------------------------------------------
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,6 +89,8 @@ void ReadInputs(void);
 void HandlePCCommand(uint8_t rx_byte);
 void WriteOutputs(void);
 void ExecuteAutomaticLogic(void);
+
+void PrintDashboard(void); // <--- DODAJ TĘ LINIJKĘ
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -138,43 +144,47 @@ int main(void) {
 	HAL_TIM_Base_Start(&htim4); // Uruchom licznik sprzętowy 4
 	/* USER CODE END 2 */
 
-
+//---------------------------------------------------------------------
 	/* Infinite loop */
-		/* USER CODE BEGIN WHILE */
-		while (1) {
-			// 1. Wczytanie fizycznych wejść
-			ReadInputs();
+	/* USER CODE BEGIN 3 */
 
-			// 2. Wykonanie logiki automatycznej (PLC)
-			ExecuteAutomaticLogic();
+	  // Zmienna do odliczania czasu dla Dashboardu (deklaracja przed pętlą)
+	  uint32_t last_print_tick = 0;
 
-			// 3. DETEKCJA ZMIAN I RAPORTOWANIE (Nowy blok)
-			// Sprawdzamy, czy obecny stan różni się od zapamiętanego
-			if (M[0] != last_M0 || Timer1.Q != last_Q) {
-			    HandlePCCommand('s');
-			    last_M0 = M[0];
-			    last_Q = Timer1.Q;
-			}
+	  while (1)
+	  {
+	      uint32_t current_tick = HAL_GetTick();
 
-			// 4. Sprawdzenie komend z PC (UART)
-			uint8_t rx_byte_local; // Deklaracja tylko RAZ w tym miejscu
-			if (HAL_UART_Receive(&huart2, &rx_byte_local, 1, 10) == HAL_OK) {
-				HandlePCCommand(rx_byte_local);
-			}
+	      // --- 1. SZYBKA LOGIKA PLC (co 20ms) ---
+	      if (current_tick - last_scan_tick >= SCAN_CYCLE_MS)
+	      {
+	          last_scan_tick = current_tick;
 
-			// 5. Ustawienie fizycznych wyjść
-			WriteOutputs();
+	          ReadInputs();           // Czytamy przyciski
+	          ExecuteAutomaticLogic(); // Liczymy timery, liczniki
+	          WriteOutputs();         // Zapalamy diody
 
-			// 6. Kontrola czasu i watchdog
-			HAL_IWDG_Refresh(&hiwdg);
-			HAL_Delay(50);
+	          HAL_IWDG_Refresh(&hiwdg); // Reset Watchdoga
+	      }
 
-			/* USER CODE END WHILE */
+	      // --- 2. WOLNE ODŚWIEŻANIE EKRANU (co 100ms) ---
+	      // Dzięki temu tabelka w PuTTY nie miga i nie zapychamy łącza
+	      if (current_tick - last_print_tick >= 100)
+	      {
+	          last_print_tick = current_tick;
+	          PrintDashboard(); // <--- Tu wywołujemy Twoją tabelkę ANSI
+	      }
 
-			/* USER CODE BEGIN 3 */
-			// Zostaw to miejsce puste - cała logika jest powyżej w sekcji WHILE
-		}
-		/* USER CODE END 3 */
+	      // --- 3. OBSŁUGA KOMEND Z KLAWIATURY (Non-blocking) ---
+	      // Sprawdzamy cały czas, czy użytkownik czegoś nie kliknął
+	      uint8_t rx_byte_local;
+	      if (HAL_UART_Receive(&huart2, &rx_byte_local, 1, 0) == HAL_OK) {
+	          HandlePCCommand(rx_byte_local);
+	      }
+
+	  }
+	  /* USER CODE END 3 */
+	  //-------------------------------------------------------------------
 //	/* Infinite loop */
 //	/* USER CODE BEGIN WHILE */
 //	while (1) {
@@ -456,22 +466,75 @@ void ReadInputs(void) {
 	stanyWejsc[3] = !HAL_GPIO_ReadPin(IN_4_GPIO_Port, IN_4_Pin);
 }
 //-------------------------------------------------------------------
+//-------------------------------------------------------------------
 /* USER CODE BEGIN 4 */
+
+// Funkcja odpowiedzialna TYLKO za wygląd (odświeżana automatycznie)
+void PrintDashboard(void) {
+    // 1. Magiczne kody ANSI:
+    printf("\033[?25l"); // <--- NOWOŚĆ: Ukrywa kursor (l = low/off)
+    printf("\033[H");    // Ustawia pozycję na początek (Home)
+
+    // ... reszta Twoich printf-ów bez zmian ...
+    printf("=== SYSTEM STEROWANIA SILNIKIEM ===\r\n");
+    printf("-----------------------------------\r\n");
+
+    // 2. Twój status logiczny (z Twojego kodu)
+    printf("STATUS SYSTEMU:  [%s]\r\n", M[0] ? "\033[32mPRACA (RUN)\033[0m" : "\033[31mSTOP\033[0m");
+    printf("SILNIK (OUT_2):  [%s]\r\n", Timer1.Q ? "\033[32mON \033[0m" : "\033[31mOFF\033[0m");
+
+    // 3. Pasek postępu Timera (Twoje zmienne)
+    printf("TIMER TON (T1):  %4lu / %lu ms\r\n", Timer1.ET, Timer1.PT);
+
+    printf("-----------------------------------\r\n");
+
+    // 4. Podgląd wszystkich wejść/wyjść (bardzo przydatne przy debugowaniu)
+    printf("WEJSCIA: [1]:%d  [2]:%d  [3]:%d  [4]:%d\r\n",
+           stanyWejsc[0], stanyWejsc[1], stanyWejsc[2], stanyWejsc[3]);
+
+    printf("WYJSCIA: [1]:%d  [2]:%d  [3]:%d  [4]:%d\r\n",
+           stanyWyjsc[0], stanyWyjsc[1], stanyWyjsc[2], stanyWyjsc[3]);
+
+    printf("-----------------------------------\r\n");
+    printf("STEROWANIE: '1'=Start, '2'=Stop, '3'=E-Stop\r\n");
+}
+
+// Funkcja odpowiedzialna TYLKO za odbieranie komend
 void HandlePCCommand(uint8_t rx_byte) {
     switch (rx_byte) {
-        case 's':
-        case 'S':
-            printf("\033[2J\033[H"); // Czyści ekran
-            printf("======= PANEL OPERATORSKI PLC =======\r\n");
-            printf("STATUS: %s\r\n", M[0] ? "PRACA (RUN)" : "STOP");
-            printf("-------------------------------------\r\n");
-            printf("Silnik (OUT_2): [%s]\r\n", Timer1.Q ? "ON " : "OFF");
-            printf("Czas timera:    %lu / %lu ms\r\n", Timer1.ET, Timer1.PT);
-            printf("=====================================\r\n");
+        case '1': // Symulacja przycisku START
+            stanyWejsc[0] = !stanyWejsc[0]; // Przełącz stan (Toggle)
+            break;
+        case '2': // Symulacja przycisku STOP
+            stanyWejsc[1] = !stanyWejsc[1];
+            break;
+        case '3': // Symulacja E-STOP
+            stanyWejsc[3] = !stanyWejsc[3];
+            break;
+        case 'r': // Reset błędów (jeśli masz logikę E-STOP)
+            // Tu wpisz kod resetu, np: emergency_active = false;
             break;
     }
+    // UWAGA: Nie musimy tu wywoływać PrintDashboard(), bo pętla while(1) zrobi to sama!
 }
 /* USER CODE END 4 */
+///* USER CODE BEGIN 4 */
+//void HandlePCCommand(uint8_t rx_byte) {
+//    switch (rx_byte) {
+//        case 's':
+//        case 'S':
+//            printf("\033[2J\033[H"); // Czyści ekran
+//            printf("======= PANEL OPERATORSKI PLC =======\r\n");
+//            printf("STATUS: %s\r\n", M[0] ? "PRACA (RUN)" : "STOP");
+//            printf("-------------------------------------\r\n");
+//            printf("Silnik (OUT_2): [%s]\r\n", Timer1.Q ? "ON " : "OFF");
+//            printf("Czas timera:    %lu / %lu ms\r\n", Timer1.ET, Timer1.PT);
+//            printf("=====================================\r\n");
+//            break;
+//    }
+//}
+///* USER CODE END 4 */
+//---------------------------------------------------------------------------
 ////LOGIKA PROGRAMU
 //void HandlePCCommand(uint8_t rx_byte) {
 //    switch (rx_byte)
