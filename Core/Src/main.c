@@ -1,80 +1,38 @@
 /* USER CODE BEGIN Header */
 /**
- ******************************************************************************
- * @file           : main.c
- * @brief          : Main program body
- ******************************************************************************
- * @attention
- *
- * Copyright (c) 2025 STMicroelectronics.
- * All rights reserved.
- *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
- *
- ******************************************************************************
- */
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : FABRYKA - WERSJA SZYBKA (BEZ DELAY NA STARCIE)
+  ******************************************************************************
+  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
 #include <stdio.h>
-#include <stdbool.h>
-#include "plc_blocks.h"
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-//------------------------------------------------------------------------
-#define SCAN_CYCLE_MS 20  // Czas cyklu: 20ms (50 razy na sekundę)
-//------------------------------------------------------------------------
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
 IWDG_HandleTypeDef hiwdg;
-
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim4;
-
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-#define LICZBA_PAMIECI_M 16
-#define LICZBA_WEJSC 4
-#define LICZBA_WYJSC 4
-uint8_t stanyWejsc[LICZBA_WEJSC] = { 0 };
-uint8_t stanyWyjsc[LICZBA_WYJSC] = { 0 };
-uint8_t M[LICZBA_PAMIECI_M] = { 0 };
+// --- ZMIENNE GLOBALNE ---
 
+// SYSTEM 1: ZBIORNIK
+uint32_t water_level = 0;
+uint8_t pump_status = 0;
 
-// --- Zmienne dla logiki automatycznej ---
-#define LICZBA_TIMEROW 2
-TON_Block Timer1 = { .PT = 2000 }; // Timer 2 sekundy
-//TOF_Block Timer2 = { .PT = 5000 }; // Timer 5 sekund
-//CTU_Block CTU_1 = { .PV = 4 }; // Ustaw Preset Value
-//CTD_Block CTD_1 = { .PV = 4 };
+// SYSTEM 2: PARKING
+int cars_count = 0;
+const int parking_limit = 5;
+uint8_t btn_in_last = 1;
+uint8_t btn_out_last = 1;
 
-//---------------------------------------------------------
-// ... Twoje poprzednie zmienne ...
-bool last_M0 = false;
-bool last_Q = false;
-//---------------------------------------------------------
-//----------------------------------------------------------
-uint32_t last_scan_tick = 0;
-//------------------------------------------------------------
+// SYSTEM 3: MIESZALNIK
+typedef enum { IDLE, FILLING, MIXING, EMPTYING } MixerState;
+MixerState mixer_state = IDLE;
+uint32_t mixer_timer = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -83,538 +41,297 @@ static void MX_GPIO_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_TIM4_Init(void);
-/* USER CODE BEGIN PFP */
-void ReadInputs(void);
-void HandlePCCommand(uint8_t rx_byte);
-void WriteOutputs(void);
-void ExecuteAutomaticLogic(void);
+static void MX_ADC1_Init(void);
 
-void PrintDashboard(void); // <--- DODAJ TĘ LINIJKĘ
+/* USER CODE BEGIN PFP */
+void ExecuteAutomaticLogic(void);
+void PrintDashboard(void);
+void RGB_Control(uint8_t r, uint8_t g, uint8_t b);
+
+int __io_putchar(int ch) {
+    if (ch == '\n') __io_putchar('\r');
+    HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 10);
+    return 1;
+}
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-int __io_putchar(int ch) {
-	if (ch == '\n') {
-		__io_putchar('\r');
-	}
-
-	HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
-
-	return 1;
-}
-
-/* USER CODE END 0 */
-
-/**
- * @brief  The application entry point.
- * @retval int
- */
-int main(void) {
-
-	/* USER CODE BEGIN 1 */
-
-	/* USER CODE END 1 */
-
-	/* MCU Configuration--------------------------------------------------------*/
-
-	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-	HAL_Init();
-
-	/* USER CODE BEGIN Init */
-
-	/* USER CODE END Init */
-
-	/* Configure the system clock */
-	SystemClock_Config();
-
-	/* USER CODE BEGIN SysInit */
-
-	/* USER CODE END SysInit */
-
-	/* Initialize all configured peripherals */
-	MX_GPIO_Init();
-	MX_IWDG_Init();
-	MX_USART2_UART_Init();
-	MX_TIM2_Init();
-	MX_TIM4_Init();
-	/* USER CODE BEGIN 2 */
-	HAL_TIM_Base_Start(&htim2); // Uruchom licznik sprzętowy 2
-	HAL_TIM_Base_Start(&htim4); // Uruchom licznik sprzętowy 4
-	/* USER CODE END 2 */
-
-//---------------------------------------------------------------------
-	/* Infinite loop */
-	/* USER CODE BEGIN 3 */
-
-	  // Zmienna do odliczania czasu dla Dashboardu (deklaracja przed pętlą)
-	  uint32_t last_print_tick = 0;
-
-	  while (1)
-	  {
-	      uint32_t current_tick = HAL_GetTick();
-
-	      // --- 1. SZYBKA LOGIKA PLC (co 20ms) ---
-	      if (current_tick - last_scan_tick >= SCAN_CYCLE_MS)
-	      {
-	          last_scan_tick = current_tick;
-
-	          ReadInputs();           // Czytamy przyciski
-	          ExecuteAutomaticLogic(); // Liczymy timery, liczniki
-	          WriteOutputs();         // Zapalamy diody
-
-	          HAL_IWDG_Refresh(&hiwdg); // Reset Watchdoga
-	      }
-
-	      // --- 2. WOLNE ODŚWIEŻANIE EKRANU (co 100ms) ---
-	      // Dzięki temu tabelka w PuTTY nie miga i nie zapychamy łącza
-	      if (current_tick - last_print_tick >= 100)
-	      {
-	          last_print_tick = current_tick;
-	          PrintDashboard(); // <--- Tu wywołujemy Twoją tabelkę ANSI
-	      }
-
-	      // --- 3. OBSŁUGA KOMEND Z KLAWIATURY (Non-blocking) ---
-	      // Sprawdzamy cały czas, czy użytkownik czegoś nie kliknął
-	      uint8_t rx_byte_local;
-	      if (HAL_UART_Receive(&huart2, &rx_byte_local, 1, 0) == HAL_OK) {
-	          HandlePCCommand(rx_byte_local);
-	      }
-
-	  }
-	  /* USER CODE END 3 */
-	  //-------------------------------------------------------------------
-//	/* Infinite loop */
-//	/* USER CODE BEGIN WHILE */
-//	while (1) {
-//		/* USER CODE END WHILE */
-//
-//		/* USER CODE BEGIN 3 */
-//		/* ### POCZĄTEK CYKLU SKANU PLC ### */
-//
-//		// 1. Wczytanie fizycznych wejść
-//		ReadInputs();
-//
-//		// >>> 2. Wykonanie logiki automatycznej <<<
-//		ExecuteAutomaticLogic();
-//
-//		// 3. Sprawdzenie, czy nadeszła komenda z PC
-//		uint8_t rx_byte_local; // Użyj lokalnej zmiennej
-//		if (HAL_UART_Receive(&huart2, &rx_byte_local, 1, 10) == HAL_OK) {
-//			HandlePCCommand(rx_byte_local);
-//		}
-//
-//		// 4. Ustawienie fizycznych wyjść
-//		WriteOutputs();
-//
-//		// 5. Kontrola czasu i watchdog
-//		HAL_IWDG_Refresh(&hiwdg);
-//		HAL_Delay(50);
-//
-//		/* ### KONIEC CYKLU SKANU PLC ### */
-//	}
-//	/* USER CODE END 3 */
-}
-
-/**
- * @brief System Clock Configuration
- * @retval None
- */
-void SystemClock_Config(void) {
-	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
-	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
-
-	/** Configure the main internal regulator output voltage
-	 */
-	if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1)
-			!= HAL_OK) {
-		Error_Handler();
-	}
-
-	/** Initializes the RCC Oscillators according to the specified parameters
-	 * in the RCC_OscInitTypeDef structure.
-	 */
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI
-			| RCC_OSCILLATORTYPE_LSI;
-	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-	RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-	RCC_OscInitStruct.PLL.PLLM = 1;
-	RCC_OscInitStruct.PLL.PLLN = 10;
-	RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
-	RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
-	RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-		Error_Handler();
-	}
-
-	/** Initializes the CPU, AHB and APB buses clocks
-	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
-		Error_Handler();
-	}
-}
-
-/**
- * @brief IWDG Initialization Function
- * @param None
- * @retval None
- */
-static void MX_IWDG_Init(void) {
-
-	/* USER CODE BEGIN IWDG_Init 0 */
-
-	/* USER CODE END IWDG_Init 0 */
-
-	/* USER CODE BEGIN IWDG_Init 1 */
-
-	/* USER CODE END IWDG_Init 1 */
-	hiwdg.Instance = IWDG;
-	hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
-	hiwdg.Init.Window = 4095;
-	hiwdg.Init.Reload = 4095;
-	if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
-		Error_Handler();
-	}
-	/* USER CODE BEGIN IWDG_Init 2 */
-
-	/* USER CODE END IWDG_Init 2 */
-
-}
-
-/**
- * @brief TIM2 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM2_Init(void) {
-
-	/* USER CODE BEGIN TIM2_Init 0 */
-
-	/* USER CODE END TIM2_Init 0 */
-
-	TIM_ClockConfigTypeDef sClockSourceConfig = { 0 };
-	TIM_MasterConfigTypeDef sMasterConfig = { 0 };
-
-	/* USER CODE BEGIN TIM2_Init 1 */
-
-	/* USER CODE END TIM2_Init 1 */
-	htim2.Instance = TIM2;
-	htim2.Init.Prescaler = 7999;
-	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim2.Init.Period = 999;
-	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
-		Error_Handler();
-	}
-	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) {
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig)
-			!= HAL_OK) {
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM2_Init 2 */
-
-	/* USER CODE END TIM2_Init 2 */
-
-}
-
-/**
- * @brief TIM4 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM4_Init(void) {
-
-	/* USER CODE BEGIN TIM4_Init 0 */
-
-	/* USER CODE END TIM4_Init 0 */
-
-	TIM_SlaveConfigTypeDef sSlaveConfig = { 0 };
-	TIM_MasterConfigTypeDef sMasterConfig = { 0 };
-
-	/* USER CODE BEGIN TIM4_Init 1 */
-
-	/* USER CODE END TIM4_Init 1 */
-	htim4.Instance = TIM4;
-	htim4.Init.Prescaler = 0;
-	htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim4.Init.Period = 65535;
-	htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-	htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim4) != HAL_OK) {
-		Error_Handler();
-	}
-	sSlaveConfig.SlaveMode = TIM_SLAVEMODE_EXTERNAL1;
-	sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
-	sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_RISING;
-	sSlaveConfig.TriggerFilter = 0;
-	if (HAL_TIM_SlaveConfigSynchro(&htim4, &sSlaveConfig) != HAL_OK) {
-		Error_Handler();
-	}
-	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig)
-			!= HAL_OK) {
-		Error_Handler();
-	}
-	/* USER CODE BEGIN TIM4_Init 2 */
-
-	/* USER CODE END TIM4_Init 2 */
-
-}
-
-/**
- * @brief USART2 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_USART2_UART_Init(void) {
-
-	/* USER CODE BEGIN USART2_Init 0 */
-
-	/* USER CODE END USART2_Init 0 */
-
-	/* USER CODE BEGIN USART2_Init 1 */
-
-	/* USER CODE END USART2_Init 1 */
-	huart2.Instance = USART2;
-	huart2.Init.BaudRate = 115200;
-	huart2.Init.WordLength = UART_WORDLENGTH_8B;
-	huart2.Init.StopBits = UART_STOPBITS_1;
-	huart2.Init.Parity = UART_PARITY_NONE;
-	huart2.Init.Mode = UART_MODE_TX_RX;
-	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-	huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-	huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-	if (HAL_UART_Init(&huart2) != HAL_OK) {
-		Error_Handler();
-	}
-	/* USER CODE BEGIN USART2_Init 2 */
-
-	/* USER CODE END USART2_Init 2 */
-
-}
-
-/**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
-static void MX_GPIO_Init(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-	/* USER CODE BEGIN MX_GPIO_Init_1 */
-
-	/* USER CODE END MX_GPIO_Init_1 */
-
-	/* GPIO Ports Clock Enable */
-	__HAL_RCC_GPIOC_CLK_ENABLE();
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-	__HAL_RCC_GPIOB_CLK_ENABLE();
-
-	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOA, OUT_4_Pin | OUT_1_Pin | OUT_2_Pin | OUT_3_Pin,
-			GPIO_PIN_RESET);
-
-	/*Configure GPIO pin : IN_4_Pin */
-	GPIO_InitStruct.Pin = IN_4_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-	GPIO_InitStruct.Pull = GPIO_PULLUP;
-	HAL_GPIO_Init(IN_4_GPIO_Port, &GPIO_InitStruct);
-
-	/*Configure GPIO pins : OUT_4_Pin OUT_1_Pin OUT_2_Pin OUT_3_Pin */
-	GPIO_InitStruct.Pin = OUT_4_Pin | OUT_1_Pin | OUT_2_Pin | OUT_3_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-	/*Configure GPIO pins : IN_1_Pin IN_2_Pin IN_3_Pin */
-	GPIO_InitStruct.Pin = IN_1_Pin | IN_2_Pin | IN_3_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_PULLUP;
-	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-	/* USER CODE BEGIN MX_GPIO_Init_2 */
-
-	/* USER CODE END MX_GPIO_Init_2 */
+int main(void)
+{
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_IWDG_Init();
+  MX_USART2_UART_Init();
+  MX_TIM2_Init();
+  MX_ADC1_Init();
+
+  /* USER CODE BEGIN 2 */
+  HAL_ADC_Start(&hadc1);
+
+  // SZYBKI START (Bez delay, żeby Watchdog nie zabił procesora)
+  if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg); // Nakarm psa od razu!
+
+  printf("\033[2J\033[H");
+  printf("SYSTEM START OK.\r\n");
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  while (1)
+  {
+      ExecuteAutomaticLogic();
+      PrintDashboard();
+
+      // Nakarm psa (To jest najważniejsza linijka przeciw resetom)
+      if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg);
+
+      HAL_Delay(100);
+  }
 }
 
 /* USER CODE BEGIN 4 */
 
-//ODCZYT WEJŚĆ
-void ReadInputs(void) {
-	stanyWejsc[0] = !HAL_GPIO_ReadPin(IN_1_GPIO_Port, IN_1_Pin);
-	stanyWejsc[1] = !HAL_GPIO_ReadPin(IN_2_GPIO_Port, IN_2_Pin);
-	stanyWejsc[2] = !HAL_GPIO_ReadPin(IN_3_GPIO_Port, IN_3_Pin);
-	stanyWejsc[3] = !HAL_GPIO_ReadPin(IN_4_GPIO_Port, IN_4_Pin);
-}
-//-------------------------------------------------------------------
-//-------------------------------------------------------------------
-/* USER CODE BEGIN 4 */
-
-// Funkcja odpowiedzialna TYLKO za wygląd (odświeżana automatycznie)
-void PrintDashboard(void) {
-    // 1. Magiczne kody ANSI:
-    printf("\033[?25l"); // <--- NOWOŚĆ: Ukrywa kursor (l = low/off)
-    printf("\033[H");    // Ustawia pozycję na początek (Home)
-
-    // ... reszta Twoich printf-ów bez zmian ...
-    printf("=== SYSTEM STEROWANIA SILNIKIEM ===\r\n");
-    printf("-----------------------------------\r\n");
-
-    // 2. Twój status logiczny (z Twojego kodu)
-    printf("STATUS SYSTEMU:  [%s]\r\n", M[0] ? "\033[32mPRACA (RUN)\033[0m" : "\033[31mSTOP\033[0m");
-    printf("SILNIK (OUT_2):  [%s]\r\n", Timer1.Q ? "\033[32mON \033[0m" : "\033[31mOFF\033[0m");
-
-    // 3. Pasek postępu Timera (Twoje zmienne)
-    printf("TIMER TON (T1):  %4lu / %lu ms\r\n", Timer1.ET, Timer1.PT);
-
-    printf("-----------------------------------\r\n");
-
-    // 4. Podgląd wszystkich wejść/wyjść (bardzo przydatne przy debugowaniu)
-    printf("WEJSCIA: [1]:%d  [2]:%d  [3]:%d  [4]:%d\r\n",
-           stanyWejsc[0], stanyWejsc[1], stanyWejsc[2], stanyWejsc[3]);
-
-    printf("WYJSCIA: [1]:%d  [2]:%d  [3]:%d  [4]:%d\r\n",
-           stanyWyjsc[0], stanyWyjsc[1], stanyWyjsc[2], stanyWyjsc[3]);
-
-    printf("-----------------------------------\r\n");
-    printf("STEROWANIE: '1'=Start, '2'=Stop, '3'=E-Stop\r\n");
+void RGB_Control(uint8_t r, uint8_t g, uint8_t b) {
+    // Odwrócona logika dla Wspólnej Anody (0 = świeci)
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, (r ? GPIO_PIN_RESET : GPIO_PIN_SET)); // R
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, (g ? GPIO_PIN_RESET : GPIO_PIN_SET)); // G
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, (b ? GPIO_PIN_RESET : GPIO_PIN_SET)); // B
 }
 
-// Funkcja odpowiedzialna TYLKO za odbieranie komend
-void HandlePCCommand(uint8_t rx_byte) {
-    switch (rx_byte) {
-        case '1': // Symulacja przycisku START
-            stanyWejsc[0] = !stanyWejsc[0]; // Przełącz stan (Toggle)
+void ExecuteAutomaticLogic(void) {
+
+    // === 1. ZBIORNIK (POPRAWIONA LOGIKA: <20% WŁĄCZ, >80% WYŁĄCZ) ===
+    HAL_ADC_PollForConversion(&hadc1, 10);
+    uint32_t raw = HAL_ADC_GetValue(&hadc1);
+    water_level = (raw * 100) / 4095;
+    HAL_ADC_Start(&hadc1);
+
+    if (water_level < 20) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET); // D7 ON (Pompa włączona)
+        pump_status = 1;
+    }
+    else if (water_level > 80) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // D7 OFF (Pompa wyłączona)
+        pump_status = 0;
+    }
+
+    // === 2. PARKING ===
+    int btn_in = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10); // D2
+    int btn_out = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3); // D3
+
+    if (btn_in == 0 && btn_in_last == 1) {
+        if (cars_count < parking_limit) cars_count++;
+    }
+    btn_in_last = btn_in;
+
+    if (btn_out == 0 && btn_out_last == 1) {
+        if (cars_count > 0) cars_count--;
+    }
+    btn_out_last = btn_out;
+
+    if (cars_count >= parking_limit) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1); // Czerwona ON
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 0); // Zielona OFF
+    } else {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 0);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1); // Zielona ON
+    }
+
+    // === 3. MIESZALNIK (POPRAWIONE KOLORY) ===
+    int btn_start = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10); // D6
+
+    switch (mixer_state) {
+        case IDLE:
+            RGB_Control(0, 0, 0); // OFF
+            if (btn_start == 0) {
+                mixer_state = FILLING;
+                mixer_timer = HAL_GetTick();
+            }
             break;
-        case '2': // Symulacja przycisku STOP
-            stanyWejsc[1] = !stanyWejsc[1];
+
+        case FILLING:
+            RGB_Control(0, 0, 1); // BLUE ON
+            if (HAL_GetTick() - mixer_timer > 3000) {
+                mixer_state = MIXING;
+                mixer_timer = HAL_GetTick();
+            }
             break;
-        case '3': // Symulacja E-STOP
-            stanyWejsc[3] = !stanyWejsc[3];
+
+        case MIXING:
+            RGB_Control(0, 1, 0); // GREEN ON
+            if (HAL_GetTick() - mixer_timer > 5000) {
+                mixer_state = EMPTYING;
+                mixer_timer = HAL_GetTick();
+            }
             break;
-        case 'r': // Reset błędów (jeśli masz logikę E-STOP)
-            // Tu wpisz kod resetu, np: emergency_active = false;
+
+        case EMPTYING:
+            RGB_Control(1, 0, 0); // RED ON
+            if (HAL_GetTick() - mixer_timer > 3000) {
+                mixer_state = IDLE;
+            }
             break;
     }
-    // UWAGA: Nie musimy tu wywoływać PrintDashboard(), bo pętla while(1) zrobi to sama!
+}
+
+void PrintDashboard(void) {
+    printf("\033[H");
+    printf("=== STATUS FABRYKI ===\r\n\r\n");
+
+    // ZBIORNIK
+    printf(" [1] ZBIORNIK: %3lu %%  ", water_level);
+    printf("[");
+    for(int i=0; i<10; i++) {
+        if((water_level/10) > i) printf("#"); else printf(".");
+    }
+    printf("] ");
+
+    if(pump_status == 1) printf("\033[36m[ POMPA WLEWA WODE ]\033[0m");
+    else                 printf("[ ................ ]");
+    printf("\r\n\r\n");
+
+    // PARKING
+    printf(" [2] PARKING:  %d / %d  ", cars_count, parking_limit);
+    if(cars_count >= parking_limit) printf("\033[31m[ PELNY ]\033[0m");
+    else                            printf("\033[32m[ WOLNY ]\033[0m");
+    printf("\r\n\r\n");
+
+    // MIESZALNIK
+    printf(" [3] MIESZALNIK: ");
+    switch(mixer_state) {
+        case IDLE:     printf("GOTOWY (Wcisnij D6)"); break;
+        case FILLING:  printf("\033[34mNALEWANIE (Niebieski)\033[0m"); break;
+        case MIXING:   printf("\033[32mMIESZANIE (Zielony)  \033[0m"); break;
+        case EMPTYING: printf("\033[31mWYLEWANIE (Czerwony) \033[0m"); break;
+    }
+    printf("       \r\n");
+}
+
+// --- FUNKCJE INICJALIZACYJNE ---
+void SystemClock_Config(void) {
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK) Error_Handler();
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 10;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) Error_Handler();
+}
+
+static void MX_ADC1_Init(void) {
+  ADC_ChannelConfTypeDef sConfig = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.OversamplingMode = DISABLE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
+}
+
+static void MX_IWDG_Init(void) {
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
+  hiwdg.Init.Window = 4095;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK) Error_Handler();
+}
+
+static void MX_TIM2_Init(void) {
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 7999;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK) Error_Handler();
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) Error_Handler();
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) Error_Handler();
+}
+
+static void MX_USART2_UART_Init(void) {
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
+}
+
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+void Error_Handler(void) {
+  __disable_irq();
+  while (1) {}
 }
 /* USER CODE END 4 */
-///* USER CODE BEGIN 4 */
-//void HandlePCCommand(uint8_t rx_byte) {
-//    switch (rx_byte) {
-//        case 's':
-//        case 'S':
-//            printf("\033[2J\033[H"); // Czyści ekran
-//            printf("======= PANEL OPERATORSKI PLC =======\r\n");
-//            printf("STATUS: %s\r\n", M[0] ? "PRACA (RUN)" : "STOP");
-//            printf("-------------------------------------\r\n");
-//            printf("Silnik (OUT_2): [%s]\r\n", Timer1.Q ? "ON " : "OFF");
-//            printf("Czas timera:    %lu / %lu ms\r\n", Timer1.ET, Timer1.PT);
-//            printf("=====================================\r\n");
-//            break;
-//    }
-//}
-///* USER CODE END 4 */
-//---------------------------------------------------------------------------
-////LOGIKA PROGRAMU
-//void HandlePCCommand(uint8_t rx_byte) {
-//    switch (rx_byte)
-//    {
-//        // Jedyne co zostawiamy, to Status
-//        case 'S':
-//        case 's':
-//            printf("===== STATUS =====\r\n");
-//            // Pokaż stany fizycznych wejść
-//            printf("WEJSCIA: I0(Start)=%d, I1(Stop)=%d\r\n",
-//                   stanyWejsc[0], stanyWejsc[1]);
-//
-//            // Pokaż stany kluczowych bitów programu
-//            printf("M[0]=%d\r\n", M[0]);
-//            printf("T1 (TON): IN=%d, Q=%d, ET=%lu/%lu ms\r\n",
-//                   Timer1.IN, Timer1.Q, Timer1.ET, Timer1.PT);
-//
-//            // Pokaż stany fizycznych wyjść
-//            printf("WYJSCIA: O0(Run)=%d, O1(Silnik)=%d\r\n",
-//                   stanyWyjsc[0], stanyWyjsc[1]);
-//            printf("==================\r\n");
-//            break;
-//
-//        default:
-//            printf("Nieznana komenda: %c (Uzyj 's' dla statusu)\r\n", rx_byte);
-//            break;
-//    }
-//}
-//-------------------------------------------------------------------
-void ExecuteAutomaticLogic(void) {
-    // Jeśli wciśnięto START (I0) -> Ustaw bit pamięci M0
-    if (stanyWejsc[0] == 1) {
-        M[0] = 1;
-    }
-    if (stanyWejsc[1] == 1) {
-            M[0] = 0;
-        }
-    Timer1.IN = M[0];
-    TON_Update(&Timer1);
-
-    stanyWyjsc[0] = M[0];
-    	    stanyWyjsc[1] = Timer1.Q;
-    	    stanyWyjsc[2] = 0;
-    	    stanyWyjsc[3] = 0;
-}
-
-// ZAPIS WYJŚĆ
-	void WriteOutputs(void) {
-		HAL_GPIO_WritePin(OUT_1_GPIO_Port, OUT_1_Pin, stanyWyjsc[0]);
-		HAL_GPIO_WritePin(OUT_2_GPIO_Port, OUT_2_Pin, stanyWyjsc[1]);
-		HAL_GPIO_WritePin(OUT_3_GPIO_Port, OUT_3_Pin, stanyWyjsc[2]);
-		HAL_GPIO_WritePin(OUT_4_GPIO_Port, OUT_4_Pin, stanyWyjsc[3]);
-	}
-	/* USER CODE END 4 */
-
-	/**
-	 * @brief  This function is executed in case of error occurrence.
-	 * @retval None
-	 */
-	void Error_Handler(void) {
-		/* USER CODE BEGIN Error_Handler_Debug */
-		/* User can add his own implementation to report the HAL error return state */
-		__disable_irq();
-		while (1) {
-		}
-		/* USER CODE END Error_Handler_Debug */
-	}
-#ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
-}
-#endif /* USE_FULL_ASSERT */
