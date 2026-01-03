@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : FABRYKA - WERSJA SZYBKA (BEZ DELAY NA STARCIE)
+  * @brief          : FABRYKA v3.0 (ZBIORNIK CYKLICZNY + WYŚWIETLACZ PARKINGU)
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -21,7 +21,8 @@ UART_HandleTypeDef huart2;
 
 // SYSTEM 1: ZBIORNIK
 uint32_t water_level = 0;
-uint8_t pump_status = 0;
+// 0 = OPRÓŻNIANIE (Valve Open), 1 = NAPEŁNIANIE (Pump On)
+uint8_t tank_mode = 1; // Zaczynamy od napełniania
 
 // SYSTEM 2: PARKING
 int cars_count = 0;
@@ -47,6 +48,7 @@ static void MX_ADC1_Init(void);
 void ExecuteAutomaticLogic(void);
 void PrintDashboard(void);
 void RGB_Control(uint8_t r, uint8_t g, uint8_t b);
+void DrawBigDigit(int num); // Nowa funkcja do wyświetlacza
 
 int __io_putchar(int ch) {
     if (ch == '\n') __io_putchar('\r');
@@ -67,12 +69,10 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
   HAL_ADC_Start(&hadc1);
-
-  // SZYBKI START (Bez delay, żeby Watchdog nie zabił procesora)
-  if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg); // Nakarm psa od razu!
+  if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg);
 
   printf("\033[2J\033[H");
-  printf("SYSTEM START OK.\r\n");
+  printf("SYSTEM FABRYCZNY v3.0 START.\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -81,9 +81,7 @@ int main(void)
       ExecuteAutomaticLogic();
       PrintDashboard();
 
-      // Nakarm psa (To jest najważniejsza linijka przeciw resetom)
       if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg);
-
       HAL_Delay(100);
   }
 }
@@ -91,27 +89,56 @@ int main(void)
 /* USER CODE BEGIN 4 */
 
 void RGB_Control(uint8_t r, uint8_t g, uint8_t b) {
-    // Odwrócona logika dla Wspólnej Anody (0 = świeci)
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, (r ? GPIO_PIN_RESET : GPIO_PIN_SET)); // R
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, (g ? GPIO_PIN_RESET : GPIO_PIN_SET)); // G
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, (b ? GPIO_PIN_RESET : GPIO_PIN_SET)); // B
 }
 
+// Funkcja rysująca wielkie cyfry
+void DrawBigDigit(int num) {
+    // Prosta tablica kształtów (3 linie na cyfrę)
+    const char *digits[10][3] = {
+        {" _ ", "| |", "|_|"}, // 0
+        {"   ", "  |", "  |"}, // 1
+        {" _ ", " _|", "|_ "}, // 2
+        {" _ ", " _|", " _|"}, // 3
+        {"   ", "|_|", "  |"}, // 4
+        {" _ ", "|_ ", " _|"}, // 5
+        {" _ ", "|_ ", "|_|"}, // 6 (opcjonalne)
+        {" _ ", "  |", "  |"}, // 7 (opcjonalne)
+        {" _ ", "|_|", "|_|"}, // 8 (opcjonalne)
+        {" _ ", "|_|", " _|"}  // 9 (opcjonalne)
+    };
+
+    if(num < 0 || num > 9) return;
+
+    printf("     %s\r\n", digits[num][0]);
+    printf("     %s\r\n", digits[num][1]);
+    printf("     %s\r\n", digits[num][2]);
+}
+
 void ExecuteAutomaticLogic(void) {
 
-    // === 1. ZBIORNIK (POPRAWIONA LOGIKA: <20% WŁĄCZ, >80% WYŁĄCZ) ===
+    // === 1. ZBIORNIK (CYKL NAPEŁNIANIA I OPRÓŻNIANIA) ===
     HAL_ADC_PollForConversion(&hadc1, 10);
     uint32_t raw = HAL_ADC_GetValue(&hadc1);
     water_level = (raw * 100) / 4095;
     HAL_ADC_Start(&hadc1);
 
-    if (water_level < 20) {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET); // D7 ON (Pompa włączona)
-        pump_status = 1;
+    // Automat stanów zbiornika (Histereza)
+    if (tank_mode == 1) {
+        // Tryb NAPEŁNIANIA (Pompa działa)
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET); // D7 ON
+        if (water_level >= 90) {
+            tank_mode = 0; // Przełącz na opróżnianie
+        }
     }
-    else if (water_level > 80) {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // D7 OFF (Pompa wyłączona)
-        pump_status = 0;
+    else {
+        // Tryb OPRÓŻNIANIA (Pompa stop, odpływ otwarty)
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // D7 OFF
+        if (water_level <= 10) {
+            tank_mode = 1; // Przełącz na napełnianie
+        }
     }
 
     // === 2. PARKING ===
@@ -128,44 +155,38 @@ void ExecuteAutomaticLogic(void) {
     }
     btn_out_last = btn_out;
 
+    // Diody statusu parkingu
     if (cars_count >= parking_limit) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1); // Czerwona ON
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 0); // Zielona OFF
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 0);
     } else {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 0);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1); // Zielona ON
     }
 
-    // === 3. MIESZALNIK (POPRAWIONE KOLORY) ===
+    // === 3. MIESZALNIK ===
     int btn_start = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10); // D6
-
     switch (mixer_state) {
         case IDLE:
-            RGB_Control(0, 0, 0); // OFF
+            RGB_Control(0, 0, 0);
             if (btn_start == 0) {
-                mixer_state = FILLING;
-                mixer_timer = HAL_GetTick();
+                mixer_state = FILLING; mixer_timer = HAL_GetTick();
             }
             break;
-
         case FILLING:
-            RGB_Control(0, 0, 1); // BLUE ON
+            RGB_Control(0, 0, 1);
             if (HAL_GetTick() - mixer_timer > 3000) {
-                mixer_state = MIXING;
-                mixer_timer = HAL_GetTick();
+                mixer_state = MIXING; mixer_timer = HAL_GetTick();
             }
             break;
-
         case MIXING:
-            RGB_Control(0, 1, 0); // GREEN ON
+            RGB_Control(0, 1, 0);
             if (HAL_GetTick() - mixer_timer > 5000) {
-                mixer_state = EMPTYING;
-                mixer_timer = HAL_GetTick();
+                mixer_state = EMPTYING; mixer_timer = HAL_GetTick();
             }
             break;
-
         case EMPTYING:
-            RGB_Control(1, 0, 0); // RED ON
+            RGB_Control(1, 0, 0);
             if (HAL_GetTick() - mixer_timer > 3000) {
                 mixer_state = IDLE;
             }
@@ -174,39 +195,46 @@ void ExecuteAutomaticLogic(void) {
 }
 
 void PrintDashboard(void) {
-    printf("\033[H");
-    printf("=== STATUS FABRYKI ===\r\n\r\n");
+    printf("\033[?25l\033[H");
+    printf("=== SYSTEM FABRYCZNY v3.0 ===         \r\n\r\n");
 
     // ZBIORNIK
     printf(" [1] ZBIORNIK: %3lu %%  ", water_level);
     printf("[");
-    for(int i=0; i<10; i++) {
-        if((water_level/10) > i) printf("#"); else printf(".");
-    }
+    for(int i=0; i<10; i++) printf((water_level/10)>i ? "#" : ".");
     printf("] ");
 
-    if(pump_status == 1) printf("\033[36m[ POMPA WLEWA WODE ]\033[0m");
-    else                 printf("[ ................ ]");
+    if(tank_mode == 1) printf("\033[36m[ ^^^ NAPEŁNIANIE ^^^ ]\033[0m   ");
+    else               printf("\033[33m[ vvv OPRÓŻNIANIE vvv ]\033[0m   ");
+    printf("\r\n");
+    // Instrukcja dla operatora
+    if(tank_mode == 1) printf("     (Krec potencjometrem w PRAWO)      ");
+    else               printf("     (Krec potencjometrem w LEWO)       ");
     printf("\r\n\r\n");
 
-    // PARKING
-    printf(" [2] PARKING:  %d / %d  ", cars_count, parking_limit);
-    if(cars_count >= parking_limit) printf("\033[31m[ PELNY ]\033[0m");
-    else                            printf("\033[32m[ WOLNY ]\033[0m");
+    // PARKING (Z WYŚWIETLACZEM)
+    printf(" [2] PARKING (Limit: %d)               \r\n", parking_limit);
+    // Rysowanie wielkiej cyfry
+    DrawBigDigit(cars_count);
+
+    printf("     Status: ");
+    if(cars_count >= parking_limit) printf("\033[31m[ PELNY ]\033[0m   ");
+    else                            printf("\033[32m[ WOLNY ]\033[0m   ");
     printf("\r\n\r\n");
 
     // MIESZALNIK
     printf(" [3] MIESZALNIK: ");
     switch(mixer_state) {
-        case IDLE:     printf("GOTOWY (Wcisnij D6)"); break;
-        case FILLING:  printf("\033[34mNALEWANIE (Niebieski)\033[0m"); break;
-        case MIXING:   printf("\033[32mMIESZANIE (Zielony)  \033[0m"); break;
-        case EMPTYING: printf("\033[31mWYLEWANIE (Czerwony) \033[0m"); break;
+        case IDLE:     printf("GOTOWY (Wcisnij D6)          "); break;
+        case FILLING:  printf("\033[34mNALEWANIE (Niebieski)...\033[0m     "); break;
+        case MIXING:   printf("\033[32mMIESZANIE (Zielony)...\033[0m       "); break;
+        case EMPTYING: printf("\033[31mWYLEWANIE (Czerwony)...\033[0m      "); break;
     }
-    printf("       \r\n");
+    printf("\r\n");
+    printf("                                      \r");
 }
 
-// --- FUNKCJE INICJALIZACYJNE ---
+// --- FUNKCJE INICJALIZACYJNE (Standardowe) ---
 void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
@@ -230,7 +258,6 @@ void SystemClock_Config(void) {
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) Error_Handler();
 }
-
 static void MX_ADC1_Init(void) {
   ADC_ChannelConfTypeDef sConfig = {0};
   hadc1.Instance = ADC1;
@@ -257,7 +284,6 @@ static void MX_ADC1_Init(void) {
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
 }
-
 static void MX_IWDG_Init(void) {
   hiwdg.Instance = IWDG;
   hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
@@ -265,7 +291,6 @@ static void MX_IWDG_Init(void) {
   hiwdg.Init.Reload = 4095;
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK) Error_Handler();
 }
-
 static void MX_TIM2_Init(void) {
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
@@ -282,7 +307,6 @@ static void MX_TIM2_Init(void) {
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) Error_Handler();
 }
-
 static void MX_USART2_UART_Init(void) {
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
@@ -296,7 +320,6 @@ static void MX_USART2_UART_Init(void) {
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
 }
-
 static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -329,7 +352,6 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
-
 void Error_Handler(void) {
   __disable_irq();
   while (1) {}
