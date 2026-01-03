@@ -2,10 +2,11 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : STM32 SOFT-PLC (FINALNA WERSJA - NAPRAWIONY ZBIORNIK)
+  * @brief          : FABRYKA PRO (ERROR: AUTO NA CZUJNIKU + WYJAZD)
   ******************************************************************************
   */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include <stdio.h>
@@ -13,7 +14,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
-// I2C usunięte
 IWDG_HandleTypeDef hiwdg;
 TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
@@ -53,17 +53,28 @@ PLC_Timer   T_MixerSequence;
 PLC_Counter C_Parking;
 
 // --- ZMIENNE FIZYCZNE ---
-uint8_t I_WaterLevel = 0;
+float    WaterLevel_Filtered = 0.0;
+uint8_t  I_WaterLevel_Display = 0;
+
 bool    I_Btn_Entry = false;
 bool    I_Btn_Exit  = false;
 bool    I_Btn_Start = false;
 
+// Dalmierz
+uint32_t Dist_Entry_CM = 0;
+bool     I_Car_Detected = false;
+
+// Wyjścia
 bool Q_Pump        = false;
 bool Q_Light_Red   = false;
 bool Q_Light_Green = false;
 bool Q_RGB_R       = false;
 bool Q_RGB_G       = false;
 bool Q_RGB_B       = false;
+
+// Alarmy
+bool Alarm_Tank_Low  = false;
+bool Alarm_Tank_High = false;
 
 bool M_MixerActive = false;
 
@@ -86,11 +97,16 @@ void LogicSolve(void);
 void WriteOutputs(void);
 void PrintDashboard(void);
 void Load_Retentive_Data(void);
+uint32_t HCSR04_Read(void);
+void Safe_Delay(uint32_t ms);
 
 int __io_putchar(int ch) {
-    if (ch == '\n') __io_putchar('\r');
     HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, 10);
-    return 1;
+    return ch;
+}
+int _write(int file, char *ptr, int len) {
+    for (int i = 0; i < len; i++) __io_putchar(*ptr++);
+    return len;
 }
 /* USER CODE END PFP */
 
@@ -105,38 +121,43 @@ int main(void)
   MX_ADC1_Init();
   MX_RTC_Init();
 
-  /* USER CODE BEGIN 2 */
-  // 1. ODBLOKUJ PAMIĘĆ RETENCYJNĄ
   HAL_PWR_EnableBkUpAccess();
-
-  // 2. WCZYTAJ DANE Z PAMIĘCI
   Load_Retentive_Data();
+  HAL_ADC_Start(&hadc1);
 
-  // Konfiguracja
   T_PumpDelay.PT = 2000;
   C_Parking.PV = 5;
 
-  // Karmienie psa na starcie
   if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg);
 
   printf("\033[2J\033[H");
-  printf("SYSTEM START OK. Pamiec wczytana: %d aut.\r\n", C_Parking.CV);
-  HAL_Delay(500);
-  /* USER CODE END 2 */
+  printf("SYSTEM START (WATCHDOG READY)...\r\n");
+
+  Safe_Delay(1000);
 
   while (1)
   {
       scan_start = HAL_GetTick();
 
-      // 1. INPUT (Tutaj była poprawka!)
+      // 1. INPUT (Tutaj odczytujemy czujnik i przyciski)
       ReadInputs();
 
-      // === AWARIA (SABOTAŻ: D2 + D3) ===
-      if (I_Btn_Entry && I_Btn_Exit) {
+      // ========================================================
+      // === NOWA LOGIKA BŁĘDU: AUTO NA CZUJNIKU + WYJAZD ===
+      // ========================================================
+      // I_Car_Detected = true -> Auto stoi przed szlabanem wjazdowym
+      // I_Btn_Exit = true     -> Ktoś naciska przycisk wyjazdu
+
+      if (I_Car_Detected && I_Btn_Exit) {
           printf("\033[2J\033[H");
-          printf("!!! AWARIA KRYTYCZNA - WATCHDOG ZADZIALA ZA CHWILE !!!\r\n");
+          printf("!!! BLAD KRYTYCZNY !!!\r\n");
+          printf("PRZYCZYNA: PROBA WYJAZDU GDY AUTO NA WJAZDZIE\r\n");
+          printf("...Watchdog reset za 500ms...\r\n");
+
+          // Blokujemy procesor. Watchdog zresetuje układ za ~0.5s
           while(1);
       }
+      // ========================================================
 
       // 2. LOGIC
       LogicSolve();
@@ -155,20 +176,47 @@ int main(void)
       }
 
       scan_time = HAL_GetTick() - scan_start;
-      HAL_Delay(10);
+      Safe_Delay(50);
   }
 }
 
 /* USER CODE BEGIN 4 */
 
-// === FUNKCJA PAMIĘCI ===
+void Safe_Delay(uint32_t ms) {
+    uint32_t start_tick = HAL_GetTick();
+    while((HAL_GetTick() - start_tick) < ms) {
+        if (hiwdg.Instance != NULL) HAL_IWDG_Refresh(&hiwdg);
+    }
+}
+
+uint32_t HCSR04_Read(void) {
+    uint32_t local_time = 0;
+
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);
+    for(int i=0; i<1000; i++) __NOP();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_SET);
+    for(int i=0; i<5000; i++) __NOP();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);
+
+    uint32_t timeout = 100000;
+    while (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_RESET) {
+        if (timeout-- == 0) return 0;
+    }
+
+    timeout = 100000;
+    while (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_SET) {
+        local_time++;
+        if (timeout-- == 0) break;
+    }
+    return local_time / 50;
+}
+
 void Load_Retentive_Data(void) {
     uint32_t saved_val = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
     if (saved_val > 100) saved_val = 0;
     C_Parking.CV = (int16_t)saved_val;
 }
 
-// === FUNKCJE PLC ===
 void PLC_TON(PLC_Timer *t, uint32_t tick) {
     if (t->IN) {
         if (!t->mem) { t->prev_tick = tick; t->mem = true; }
@@ -183,46 +231,48 @@ void PLC_TON(PLC_Timer *t, uint32_t tick) {
 
 void PLC_CTUD(PLC_Counter *c) {
     bool changed = false;
-
-    if (c->R) {
-        c->CV = 0;
-        changed = true;
-    } else {
-        if (c->CU && !c->last_CU) if (c->CV < 99) { c->CV++; changed = true; }
-        if (c->CD && !c->last_CD) if (c->CV > 0)  { c->CV--; changed = true; }
+    if (c->R) { c->CV = 0; changed = true; }
+    else {
+        if (c->CU && !c->last_CU) {
+            if (c->CV < c->PV) { c->CV++; changed = true; }
+        }
+        if (c->CD && !c->last_CD) {
+            if (c->CV > 0)    { c->CV--; changed = true; }
+        }
     }
-
     c->last_CU = c->CU;
     c->last_CD = c->CD;
     c->QU = (c->CV >= c->PV);
     c->QD = (c->CV <= 0);
 
-    if (changed) {
-        HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, (uint32_t)c->CV);
-    }
+    if (changed) HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, (uint32_t)c->CV);
 }
 
-// === LOGIKA GLOWNA ===
 void ReadInputs(void) {
-    // --- POPRAWIONY ODCZYT ADC (START -> POLL -> GET) ---
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
         uint32_t raw = HAL_ADC_GetValue(&hadc1);
-        I_WaterLevel = (raw * 100) / 4095;
+        float current_perc = (raw * 100.0) / 4095.0;
+        WaterLevel_Filtered = (WaterLevel_Filtered * 0.9) + (current_perc * 0.1);
+        I_WaterLevel_Display = (uint8_t)WaterLevel_Filtered;
     }
-    // Nie robimy HAL_ADC_Stop, żeby było szybciej w następnym cyklu,
-    // ale Start przed każdym Poll jest bezpieczniejszy.
 
-    // Przyciski (Pull-Up)
-    I_Btn_Entry = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) == GPIO_PIN_RESET);
-    I_Btn_Exit  = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET);
+    Dist_Entry_CM = HCSR04_Read();
+    I_Car_Detected = (Dist_Entry_CM > 0 && Dist_Entry_CM < 15);
+
+    // Wjazd: Przycisk LUB Czujnik
+    bool btn_entry_phys = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) == GPIO_PIN_RESET);
+    I_Btn_Entry = btn_entry_phys || I_Car_Detected;
+
+    // Wyjazd
+    I_Btn_Exit = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET);
+
     I_Btn_Start = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET);
 }
 
 void LogicSolve(void) {
     uint32_t current_time = HAL_GetTick();
 
-    // Parking
     C_Parking.CU = I_Btn_Entry;
     C_Parking.CD = I_Btn_Exit;
     C_Parking.R  = 0;
@@ -231,16 +281,19 @@ void LogicSolve(void) {
     Q_Light_Red   = C_Parking.QU;
     Q_Light_Green = !C_Parking.QU;
 
-    // Zbiornik
-    T_PumpDelay.IN = (I_WaterLevel < 20);
+    if (I_WaterLevel_Display < 10) Alarm_Tank_Low = true;
+    else Alarm_Tank_Low = false;
+
+    if (I_WaterLevel_Display > 90) Alarm_Tank_High = true;
+    else Alarm_Tank_High = false;
+
+    T_PumpDelay.IN = (I_WaterLevel_Display < 20);
     T_PumpDelay.PT = 2000;
     PLC_TON(&T_PumpDelay, current_time);
 
-    // Logika Set/Reset dla pompy
-    if (T_PumpDelay.Q) Q_Pump = true;       // Włącz po opóźnieniu
-    if (I_WaterLevel > 80) Q_Pump = false;  // Wyłącz natychmiast jak pełny
+    if (T_PumpDelay.Q) Q_Pump = true;
+    if (I_WaterLevel_Display > 80 || Alarm_Tank_High) Q_Pump = false;
 
-    // Mieszalnik
     if (I_Btn_Start) M_MixerActive = true;
     T_MixerSequence.IN = M_MixerActive;
     T_MixerSequence.PT = 10000;
@@ -248,7 +301,6 @@ void LogicSolve(void) {
 
     uint32_t t = T_MixerSequence.ET;
     Q_RGB_R = 0; Q_RGB_G = 0; Q_RGB_B = 0;
-
     if (M_MixerActive) {
         if (t < 3000) Q_RGB_B = true;
         else if (t < 8000) Q_RGB_G = true;
@@ -266,50 +318,57 @@ void WriteOutputs(void) {
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, Q_RGB_B ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
+void DrawBar(uint8_t percentage) {
+    printf("[");
+    int bars = percentage / 5;
+    for(int i=0; i<20; i++) {
+        if(i < bars) printf("#");
+        else printf(".");
+    }
+    printf("]");
+}
+
 void PrintDashboard(void) {
     printf("\033[?25l\033[H");
-    printf("=== SYSTEM FABRYKI (SCADA) ===               \r\n");
-    printf("Status: PRACA NORMALNA                       \r\n\r\n");
+    printf("=== SCADA PRO (LOGIKA BLEDU: SENSOR+BTN) === \r\n");
+    printf("Status: SYSTEM OK                            \r\n\r\n");
 
-    // PARKING
-    printf("[2] PARKING (Licznik)                       \r\n");
-    printf("    Auta:       [%2d / %2d]                  \r\n", C_Parking.CV, C_Parking.PV);
-    if(C_Parking.QU) printf("    Wjazd:      \033[31m[ ZABRONIONY ]\033[0m            \r\n");
-    else             printf("    Wjazd:      \033[32m[ DOZWOLONY  ]\033[0m            \r\n");
-    printf("-------------------------------------------   \r\n");
-
-    // ZBIORNIK - Teraz powinno działać poprawnie!
     printf("[1] ZBIORNIK WODY                           \r\n");
-    printf("    Poziom:     %d%%    (Opoznienie: %d)      \r\n", I_WaterLevel, T_PumpDelay.IN);
-    if(Q_Pump) printf("    POMPA:      \033[32m[ PRACA ]\033[0m                  \r\n");
-    else       printf("    POMPA:      [ STOP  ]                  \r\n");
+    printf("    Poziom: ");
+    DrawBar(I_WaterLevel_Display);
+    printf(" %3d%% \r\n", I_WaterLevel_Display);
+
+    printf("    Status: ");
+    if(Alarm_Tank_High)     printf("\033[31m[ PRZEPELNIENIE! ]\033[0m ");
+    else if(Alarm_Tank_Low) printf("\033[33m[ SUSZA (LOW)    ]\033[0m ");
+    else                    printf("\033[32m[ NORMA          ]\033[0m ");
+
+    if(Q_Pump) printf("| POMPA: \033[32m[ON]\033[0m  \r\n");
+    else       printf("| POMPA: [OFF] \r\n");
+
     printf("-------------------------------------------   \r\n");
 
-    // MIESZALNIK
-    printf("[3] MIESZALNIK PROCESOWY                    \r\n");
-    printf("    Czas:       [%4lu / 10000 ms]           \r\n", T_MixerSequence.ET);
+    printf("[2] PARKING (1 Sensor)                      \r\n");
+    printf("    Licznik:    [%d / %d]                    \r\n", C_Parking.CV, C_Parking.PV);
+    if(C_Parking.QU) printf("    Wjazd:      \033[31m[ ZAMKNIETY  ]\033[0m            \r\n");
+    else             printf("    Wjazd:      \033[32m[ OTWARTY    ]\033[0m            \r\n");
+    printf("    Sensor:     %lu cm (%s)                 \r\n", Dist_Entry_CM, I_Car_Detected ? "AUTO" : "...");
+    printf("-------------------------------------------   \r\n");
+
+    printf("[3] MIESZALNIK                              \r\n");
     printf("    Stan:       ");
     if(Q_RGB_B)      printf("\033[34m[ NALEWANIE ]\033[0m   ");
     else if(Q_RGB_G) printf("\033[32m[ MIESZANIE ]\033[0m   ");
     else if(Q_RGB_R) printf("\033[31m[ WYLEWANIE ]\033[0m   ");
-    else             printf("[ OCZEKIWANIE ]   ");
+    else             printf("[ GOTOWY    ]   ");
     printf("\r\n                                            \r");
 }
 
-// === INICJALIZACJA ===
+/* USER CODE END 4 */
 
-static void MX_RTC_Init(void)
-{
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK) Error_Handler();
-}
+// ====================================================================
+// === FUNKCJE SPRZĘTOWE ==============================================
+// ====================================================================
 
 void SystemClock_Config(void)
 {
@@ -335,6 +394,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) Error_Handler();
 }
+
 static void MX_ADC1_Init(void)
 {
   ADC_ChannelConfTypeDef sConfig = {0};
@@ -356,12 +416,13 @@ static void MX_ADC1_Init(void)
   if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
   sConfig.Channel = ADC_CHANNEL_5;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
 }
+
 static void MX_IWDG_Init(void)
 {
   hiwdg.Instance = IWDG;
@@ -370,6 +431,20 @@ static void MX_IWDG_Init(void)
   hiwdg.Init.Reload = 4095;
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK) Error_Handler();
 }
+
+static void MX_RTC_Init(void)
+{
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) Error_Handler();
+}
+
 static void MX_TIM2_Init(void)
 {
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -387,6 +462,7 @@ static void MX_TIM2_Init(void)
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) Error_Handler();
 }
+
 static void MX_USART2_UART_Init(void)
 {
   huart2.Instance = USART2;
@@ -401,31 +477,28 @@ static void MX_USART2_UART_Init(void)
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
 }
+
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
 
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_7, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_1;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
@@ -434,10 +507,25 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
 
@@ -446,4 +534,3 @@ void Error_Handler(void)
   __disable_irq();
   while (1) {}
 }
-/* USER CODE END 4 */
