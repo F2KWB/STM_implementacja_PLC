@@ -61,7 +61,6 @@ extern uint8_t rx_buffer_HAL[]; // Potrzebujemy też tego
 extern TIM_HandleTypeDef htim2;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
-
 extern volatile uint16_t modbus_rx_index;
 extern volatile bool modbus_frame_received;
 /* USER CODE END EV */
