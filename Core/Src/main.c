@@ -25,7 +25,7 @@ TIM_HandleTypeDef htim2;       // Timer sprzętowy (Baza czasu)
 
 // 1. KONFIGURACJA PARAMETRÓW
 
-#define PLC_SCAN_TIME_MS    2     // Cykl programu (50ms = 20Hz)
+#define PLC_SCAN_TIME_MS    50     // Cykl programu (50ms = 20Hz)
 
 // PARKING
 #define PARKING_CAPACITY    5       // Max_aut
@@ -56,11 +56,12 @@ TON_Block    T_AutoReset;   // tim_reset_mieszalnik
 TOF_Block    T_Fan;         // tim_pompa_chlodzenie
 
 // Liczniki (CTU, CTD)
-CTU_Block    C_Parking;     // CU_auta
+CTU_Block    C_Parking_Entry;     // CU_auta
 CTD_Block    C_Service;     // CD_mieszalnik_serwis_reset
+CTD_Block    C_Parking_Exit;
 
 // Wyzwalacze (Triggers)
-R_TRIG_Block Trig_Exit;     // Wykrywanie zbocza narastającego (przycisk wyjazdu)
+R_TRIG_Block Trig_Start;     // Wykrywanie zbocza narastającego (przycisk wyjazdu)
 
 // 3. LOGIKA PLC - główna pętla
 
@@ -147,15 +148,18 @@ int main(void)
   HAL_PWR_EnableBkUpAccess();
 
   // INICJALIZACJA LOGIKI PLC
-
+//--------------------------------------------------------------------------------
   // PARKING - Odtwarzanie stanu z pamięci
   uint32_t saved_parking = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0);
   // Zabezpieczenie przed złą ilością
   if(saved_parking > PARKING_CAPACITY) saved_parking = 0;
 
-  C_Parking.CV = (uint16_t)saved_parking; // Przywracanie wartości
-  C_Parking.PV = PARKING_CAPACITY;        // Limit
-  C_Parking.R  = false;                   // Reset wył.
+  C_Parking_Entry.CV = (uint16_t)saved_parking;
+    C_Parking_Entry.PV = PARKING_CAPACITY;
+    C_Parking_Entry.R  = false;
+
+    C_Parking_Exit.PV = 0; // Limit wyjazdu to 0
+    C_Parking_Exit.LD = false;
 
   // SERWIS - Odtwarzanie stanu z pamięci
   uint32_t saved_service = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
@@ -213,39 +217,33 @@ int main(void)
   }
 }
 
-// LOGIKA SYSTEMÓW
-void Logic_Factory(void) {
+    void Logic_Factory(void) {
 
-    //PARKING
+        // PARKING (CTU + CTD = CTUD)
 
-    // WYJAZD - blok R_TRIG (Wykrywanie zbocza narastającego)
-    Trig_Exit.CLK = In.Btn_Exit;
-    R_TRIG_Update(&Trig_Exit);
+        // Przekaż stan z CTU do CTD
+        C_Parking_Exit.CV = C_Parking_Entry.CV;
 
-    // Jeśli wykryto zbocze (Trig_Exit.Q == true)
-    if (Trig_Exit.Q) {
-        if (C_Parking.CV > 0) C_Parking.CV--; // Zmniejsz stan licznika
-        // Zapisz do pamięci trwałej
-        HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, C_Parking.CV);
-    }
+        // WYJAZD (Blok CTD)
+        C_Parking_Exit.CD = In.Btn_Exit;
+        CTD_Update(&C_Parking_Exit);
 
-    // WJAZD -  blok CTU
-    C_Parking.CU = In.Btn_Entry;
-    CTU_Update(&C_Parking);
+        C_Parking_Entry.CV = C_Parking_Exit.CV;
 
-    // limit_zabezpieczenie
-    if (C_Parking.CV > C_Parking.PV) C_Parking.CV = C_Parking.PV;
+        // WJAZD (Blok CTU)
+        C_Parking_Entry.CU = In.Btn_Entry;
+        CTU_Update(&C_Parking_Entry);
 
-    // Zapis stanu wjazdu do pamięci
-    static uint16_t last_park_cv = 0;
-    if (C_Parking.CV != last_park_cv) {
-        HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, C_Parking.CV);
-        last_park_cv = C_Parking.CV;
-    }
+        if (C_Parking_Entry.CV > C_Parking_Entry.PV) C_Parking_Entry.CV = C_Parking_Entry.PV;
 
-    // diody na podstawie wyjścia
-    if (C_Parking.Q) { Out.Led_Full = true; Out.Led_Free = false; }
-    else             { Out.Led_Full = false; Out.Led_Free = true; }
+        static uint16_t last_park_cv = 0;
+        if (C_Parking_Entry.CV != last_park_cv) {
+            HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, C_Parking_Entry.CV);
+            last_park_cv = C_Parking_Entry.CV;
+        }
+
+        if (C_Parking_Entry.Q) { Out.Led_Full = true; Out.Led_Free = false; }
+        else                   { Out.Led_Full = false; Out.Led_Free = true; }
 
 
     // ZBIORNIK
@@ -289,7 +287,14 @@ void Logic_Factory(void) {
     // Blokada startu - jesli ok mozesz ruszac
     bool service_ok = !C_Service.Q;
 
-    if (In.Btn_Start && service_ok) Sys.Mixer_Running = true;
+    //TRIGGER
+        Trig_Start.CLK = In.Btn_Start;
+
+        R_TRIG_Update(&Trig_Start);
+
+        if (Trig_Start.Q && service_ok) {
+            Sys.Mixer_Running = true;
+        }
 
     // Timer TON
     T_Mixer.IN = Sys.Mixer_Running;
@@ -429,14 +434,14 @@ void PrintDashboard(void) {
 
     printf("--------------------------------------------\033[K\r\n");
 
-    printf("[2] PARKING (CTU + R_TRIG)\033[K\r\n");
-    printf("    Licznik: [%d / %d] (CV / PV)\033[K\r\n", C_Parking.CV, C_Parking.PV);
+    printf("[2] PARKING (CTU + CTD)\033[K\r\n");
+    printf("    Licznik: [%d / %d] (CV / PV)\033[K\r\n", C_Parking_Entry.CV, C_Parking_Entry.PV);
     printf("    Status:  %s\033[K\r\n",
            Out.Led_Full ? "\033[31m[ PELNY ]\033[0m" : "\033[32m[ WOLNY ]\033[0m");
 
     printf("--------------------------------------------\033[K\r\n");
 
-    printf("[3] MIESZALNIK (TON + CTD)\033[K\r\n");
+    printf("[3] MIESZALNIK (TON + CTD + R_TRIG)\033[K\r\n");
     printf("    Status:  ");
     if(Out.RGB_B) printf("\033[34m[ NALEWANIE ]\033[0m");
     else if(Out.RGB_G) printf("\033[32m[ MIESZANIE ]\033[0m");
