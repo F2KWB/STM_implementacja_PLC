@@ -28,36 +28,36 @@ TIM_HandleTypeDef htim2;       // Timer sprzętowy (Baza czasu)
 #define PLC_SCAN_TIME_MS    50     // Cykl programu (50ms = 20Hz)
 
 // PARKING
-#define PARKING_CAPACITY    5       // Max_aut
+#define PARKING_CAPACITY    5
 
 // MIESZALNIK
-#define MIXER_CYCLES_LIMIT  2       // serwis (countdown - CTD)
-#define MIXER_TIME_TOTAL    10000   // Czas procesu (10s)
-#define MIXER_PHASE_1       3000    // Faza 1
-#define MIXER_PHASE_2       8000    // Faza 2
-#define AUTO_RESET_TIME_MS  3000    // Czas czyszczenia
+#define MIXER_CYCLES_LIMIT  2       // serwis (CTD)
+#define MIXER_TIME_TOTAL    10000
+#define MIXER_PHASE_1       3000
+#define MIXER_PHASE_2       8000
+#define AUTO_RESET_TIME_MS  3000
 
 // ZBIORNIK
-#define TANK_MIN            10      // Alarm niskiego poziomu (%)
-#define TANK_MAX            90      // Alarm wysokiego poziomu (%)
-#define PUMP_START_LVL      20      // Histereza: Włącz pompę poniżej 20%
-#define PUMP_STOP_LVL       80      // Histereza: Wyłącz pompę powyżej 80%
+#define TANK_MIN            10
+#define TANK_MAX            90
+#define PUMP_START_LVL      20
+#define PUMP_STOP_LVL       80
 #define PUMP_DELAY_MS       2000    // Czas opóźnienia załączenia pompy (TON)
 #define FAN_COOLDOWN_MS     3000    // Czas chłodzenia po wyłączeniu (TOF)
 
 // 2. PLC_BLOKI
 
-// TON
-TON_Block    T_Mixer;       // tim_mieszalnik
-TON_Block    T_PumpDelay;   // tim_opoznienie_pompa
-TON_Block    T_AutoReset;   // tim_reset_mieszalnik
+// TONy
+TON_Block    T_Mixer;
+TON_Block    T_PumpDelay;
+TON_Block    T_AutoReset;
 
-// TOF
-TOF_Block    T_Fan;         // tim_pompa_chlodzenie
+// TOFy
+TOF_Block    T_Fan; //pompa
 
 // Liczniki (CTU, CTD)
-CTU_Block    C_Parking_Entry;     // CU_auta
-CTD_Block    C_Service;     // CD_mieszalnik_serwis_reset
+CTU_Block    C_Parking_Entry;
+CTD_Block    C_Service;
 CTD_Block    C_Parking_Exit;
 
 // Wyzwalacze (Triggers)
@@ -84,16 +84,16 @@ typedef struct {
     bool Led_Full;      // Lampa "Parking Pełny"
     bool Led_Free;      // Lampa "Parking Wolny"
     bool Fan_Cooling;   // Wentylator pompy
-    bool Service_Req;   // Lampa "Wymagany Serwis"
-    bool Auto_Cleaning; // Lampa "Trwa Czyszczenie"
+    bool Service_Req;   // dioda "Wymagany Serwis"
+    bool Auto_Cleaning; // dioda "Trwa Czyszczenie"
 } Outputs_T;
 
 // Flagi
 typedef struct {
-    bool Mixer_Running; // Czy proces mieszania trwa?
-    bool Alarm_Low;     // Alarm poziomu MIN
-    bool Alarm_High;    // Alarm poziomu MAX
-    bool Critical_Error;// Błąd krytyczny (zatrzymanie awaryjne)
+    bool Mixer_Running;
+    bool Alarm_Low;
+    bool Alarm_High;
+    bool Critical_Error;
 } System_T;
 
 
