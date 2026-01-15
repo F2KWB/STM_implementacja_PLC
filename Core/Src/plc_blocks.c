@@ -1,5 +1,5 @@
 #include "plc_blocks.h"
-// Potrzebujemy HAL_GetTick()
+// HAL_GetTick()
 #include "main.h"
 
 extern TIM_HandleTypeDef htim4;
@@ -7,8 +7,7 @@ extern TIM_HandleTypeDef htim4;
  * @brief Implementacja logiki timera TON.
  */
 void TON_Update(TON_Block *t) {
-    // Ta funkcja jest skopiowana 1:1 z Twojego main.c
-    // Używa wskaźnika 't', aby modyfikować ORYGINAŁ
+
 
     uint32_t currentTick = HAL_GetTick();
 

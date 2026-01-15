@@ -10,7 +10,6 @@
 #include "main.h"
 #include <stdio.h> //printf
 #include <stdbool.h> //bool, true itp.
-
 // nasza biblioteki (bloki logiczne)
 #include "plc_blocks.h"
 
@@ -26,7 +25,7 @@ TIM_HandleTypeDef htim2;       // Timer sprzętowy (Baza czasu)
 
 // 1. KONFIGURACJA PARAMETRÓW
 
-#define PLC_SCAN_TIME_MS    50      // Cykl programu (50ms = 20Hz)
+#define PLC_SCAN_TIME_MS    2     // Cykl programu (50ms = 20Hz)
 
 // PARKING
 #define PARKING_CAPACITY    5       // Max_aut
@@ -179,7 +178,7 @@ int main(void)
 
   printf("\033[2J\033[H");
   printf("SYSTEM START: PLC - ZASTOSOWANIE (AUTO-RESET)\r\n");
-
+//-----------------------------------------------------------------------------------------------
   // GŁÓWNA PĘTLA PLC
   while (1)
   {
@@ -419,10 +418,10 @@ void DrawBar(uint8_t val) {
 // Wizualizacja w terminalu PuTTY
 void PrintDashboard(void) {
     printf("\033[?25l\033[H");
-    printf("PROJEKT: STEROWNIK FABRYKI v8.0 (STM32 + PLC)\033[K\r\n");
+    printf("PROJEKT_SPC_STEROWNIK_PLC_NA_STM32)\033[K\r\n");
     printf("Bloki: TON, TOF, CTU, CTD, R_TRIG\033[K\r\n\r\n");
 
-    printf("[1] ZBIORNIK (TON + TOF + RAMPA)\033[K\r\n");
+    printf("[1] ZBIORNIK (TON + TOF)\033[K\r\n");
     printf("    Poziom: "); DrawBar(In.Tank_Level); printf(" %3d%%\033[K\r\n", In.Tank_Level);
     printf("    Pompa:  %s  (Timer ON:  %4lu ms)\033[K\r\n", Out.Pump ? "\033[32m[ON] \033[0m" : "[OFF]", T_PumpDelay.ET);
     printf("    Wentyl: %s  (Timer OFF: %4lu ms)\033[K\r\n",
@@ -430,14 +429,14 @@ void PrintDashboard(void) {
 
     printf("--------------------------------------------\033[K\r\n");
 
-    printf("[2] PARKING (CTU + R_TRIG + BACKUP)\033[K\r\n");
+    printf("[2] PARKING (CTU + R_TRIG)\033[K\r\n");
     printf("    Licznik: [%d / %d] (CV / PV)\033[K\r\n", C_Parking.CV, C_Parking.PV);
     printf("    Status:  %s\033[K\r\n",
            Out.Led_Full ? "\033[31m[ PELNY ]\033[0m" : "\033[32m[ WOLNY ]\033[0m");
 
     printf("--------------------------------------------\033[K\r\n");
 
-    printf("[3] MIESZALNIK (TON + CTD + AUTO-RESET)\033[K\r\n");
+    printf("[3] MIESZALNIK (TON + CTD)\033[K\r\n");
     printf("    Status:  ");
     if(Out.RGB_B) printf("\033[34m[ NALEWANIE ]\033[0m");
     else if(Out.RGB_G) printf("\033[32m[ MIESZANIE ]\033[0m");
@@ -446,10 +445,10 @@ void PrintDashboard(void) {
     printf(" (%4lu ms)\033[K\r\n", T_Mixer.ET);
 
     if (Out.Auto_Cleaning) {
-        printf("    Serwis:  \033[33m[ AUTO-CLEANING... %lu ms ]\033[0m\033[K\r\n",
+        printf("    Serwis:  \033[33m[ CZYSZCZENIE... %lu ms ]\033[0m\033[K\r\n",
                T_AutoReset.PT - T_AutoReset.ET);
     } else {
-        printf("    Serwis:  [%d cykli do konca] %s\033[K\r\n", C_Service.CV,
+        printf("    Serwis:  [liczba cykli do końca: %d] %s\033[K\r\n", C_Service.CV,
                Out.Service_Req ? "\033[31m[WAIT...]\033[0m" : "\033[32m[OK]\033[0m");
     }
 
