@@ -1,37 +1,32 @@
-# STM32 PLC Logic Core (Symulator Sterownika PLC)
+# STM32 Symulator PLC 
 
-Projekt edukacyjny / inżynierski polegający na implementacji modularnego rdzenia logicznego sterownika PLC na mikrokontrolerze z rodziny STM32. 
+Projekt symulatora sterownika PLC napisanego na mikrokontroler STM32 w języku C. Celem było odtworzenie mechanizmów znanych z prawdziwych sterowników przemysłowych (stały czas cyklu, standardowe bloki funkcyjne, obsługa błędów) w środowisku embedded.
 
-Celem projektu było przeniesienie koncepcji znanych z przemysłowych sterowników PLC (cykl skanu, standardowe bloki funkcyjne, obsługa I/O, determinizm czasowy) na platformę embedded programowaną w języku C.
+## Gdzie szukać kodu?
 
-## 🗂️ Struktura repozytorium
+Projekt bazuje na konfiguracji wygenerowanej przez STM32CubeMX. Właściwy kod znajduje się w:
 
-Większość plików konfiguracyjnych została wygenerowana przez STM32CubeMX. Nasz autorski kod i logika systemu znajdują się w następujących lokalizacjach:
+* `Core/Src/plc_blocks.c` / `Core/Inc/plc_blocks.h` - Biblioteka z implementacją standardowych bloków IEC 61131-3: timery (TON, TOF), liczniki (CTU, CTD) oraz detekcja zbocza (R_TRIG).
+* `Core/Src/main.c` - Główna pętla z rygorystycznym czasem cyklu (50 ms) oraz przykładowe logiki sterowania procesami (parking, napełnianie zbiornika, mieszalnik). 
 
-* **[`Core/Src/plc_blocks.c`](Core/Src/plc_blocks.c)** oraz **[`Core/Inc/plc_blocks.h`](Core/Inc/plc_blocks.h)** * *Biblioteka implementująca standardowe bloki funkcyjne zgodne z normą IEC 61131-3.*
-  * *Zawiera logikę dla: Timerów (TON, TOF), Liczników (CTU, CTD) oraz detekcji zboczy (R_TRIG).*
-* **[`Core/Src/main.c`](Core/Src/main.c)** * *Główna pętla (Task Scheduler) z zachowanym stałym czasem cyklu (50 ms).*
-  * *Implementacja logiki sterowania trzema przykładowymi procesami przemysłowymi: Zautomatyzowanym Parkingiem, Zbiornikiem z pompą oraz Mieszalnikiem.*
-  * *Procedury bezpieczeństwa (Safety Check) i sprzężenia z peryferiami (ADC, RTC, UART).*
+## Główne założenia
 
-## ⚙️ Główne założenia i funkcje systemu
+* **Cykl skanu PLC:** Program działa w pętli ze stałym czasem cyklu 50 ms.
+* **Watchdog (IWDG):** W przypadku wykrycia stanu krytycznego (np. jednoczesny sygnał wjazdu i wyjazdu) system wchodzi w pętlę nieskończoną, co wyzwala sprzętowy reset.
+* **Pamięć trwała (Retain):** Najważniejsze dane, takie jak stan liczników serwisowych czy ilość pojazdów na parkingu, są trzymane w rejestrach Backup RTC, aby przetrwały zanik zasilania.
+* **Diagnostyka UART:** System wysyła "interfejs HMI" po porcie szeregowym. W terminalu (np. PuTTY) można na żywo podglądać paski postępu, statusy timerów i flagi.
 
-1. **Deterministyczny cykl pracy:** Program posiada zaimplementowany mechanizm stałego czasu skanu (50 ms), typowy dla sterowników PLC.
-2. **Niezawodność (Watchdog):** Wdrożono sprzętowy IWDG. W przypadku błędu krytycznego (np. jednoczesny sygnał wjazdu i wyjazdu z parkingu), system odcina wyjścia i oczekuje na twardy reset.
-3. **Pamięć trwała (Retentive Memory):** Zmienne takie jak stan liczników (ilość aut na parkingu, cykle serwisowe mieszalnika) są zapisywane w rejestrach Backup RTC, co pozwala na ich zachowanie po zaniku zasilania.
-4. **Wizualizacja (HMI/SCADA):** System wysyła dynamiczny "Dashboard" przez port UART (widoczny np. w programie PuTTY), na którym na żywo rysowane są paski postępu, statusy timerów i stany wyjść.
+## Sprzęt i peryferia
 
-## 🛠️ Wykorzystane technologie i peryferia
+Projekt został uruchomiony na zestawie z rodziny Nucleo. Użyte technologie:
+* **Język:** C (z wykorzystaniem bibliotek HAL)
+* **Peryferia STM32:**
+  * `GPIO` - obsługa przycisków, diod statusowych oraz triggera dla czujnika HC-SR04
+  * `ADC` - odczyt sygnałów analogowych (potencjometr symulujący poziom w zbiorniku)
+  * `UART` - terminal
+  * `RTC` & `IWDG`
 
-* **Mikrokontroler:** STM32 (konfiguracja za pomocą bibliotek HAL)
-* **Język:** C
-* **Peryferia STM32:** * `ADC` (odczyt sygnałów analogowych np. symulacja poziomu wody)
-  * `UART` (komunikacja i wizualizacja w terminalu)
-  * `RTC` (rejestry podtrzymujące dane)
-  * `IWDG` (Watchdog)
-  * `GPIO` (obsługa zewnętrznego czujnika odległości HC-SR04 oraz przycisków/diod)
-
-"Fizyczny prototyp systemu na zestawie STM32 Nucleo. Widoczne podłączenie czujnika odległości HC-SR04 (symulacja bramy wjazdowej/poziomu w zbiorniku), potencjometru (ADC) oraz fizycznych wejść/wyjść (przyciski, diody statusowe)."
+## Stanowisko testowe
 
 <img width="1152" height="2048" alt="image" src="https://github.com/user-attachments/assets/94d286d9-6038-4d56-a408-ce3aaae03dfa" />
 
