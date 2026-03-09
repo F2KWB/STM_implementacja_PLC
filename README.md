@@ -2,8 +2,6 @@
 
 Projekt symulatora sterownika PLC napisanego na mikrokontroler STM32 w języku C. Celem było odtworzenie mechanizmów znanych z prawdziwych sterowników przemysłowych (stały czas cyklu, standardowe bloki funkcyjne, obsługa błędów) w środowisku embedded.
 
-## Gdzie szukać kodu?
-
 Projekt bazuje na konfiguracji wygenerowanej przez STM32CubeMX. Właściwy kod znajduje się w:
 
 * `Core/Src/plc_blocks.c` / `Core/Inc/plc_blocks.h` - Biblioteka z implementacją standardowych bloków IEC 61131-3: timery (TON, TOF), liczniki (CTU, CTD) oraz detekcja zbocza (R_TRIG).
