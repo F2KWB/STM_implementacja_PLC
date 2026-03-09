@@ -11,7 +11,7 @@ Projekt bazuje na konfiguracji wygenerowanej przez STM32CubeMX. Właściwy kod z
 
 * **Cykl skanu PLC:** Program działa w pętli ze stałym czasem cyklu 50 ms.
 * **Watchdog (IWDG):** W przypadku wykrycia stanu krytycznego (np. jednoczesny sygnał wjazdu i wyjazdu) system wchodzi w pętlę nieskończoną, co wyzwala sprzętowy reset.
-* **Pamięć trwała (Retain):** Najważniejsze dane, takie jak stan liczników serwisowych czy ilość pojazdów na parkingu, są trzymane w rejestrach Backup RTC, aby przetrwały zanik zasilania.
+* **Pamięć trwała:** Najważniejsze dane, takie jak stan liczników serwisowych czy ilość pojazdów na parkingu, są trzymane w rejestrach Backup RTC, aby przetrwały zanik zasilania.
 * **Diagnostyka UART:** System wysyła "interfejs HMI" po porcie szeregowym. W terminalu (np. PuTTY) można na żywo podglądać paski postępu, statusy timerów i flagi.
 
 ## Sprzęt i peryferia
