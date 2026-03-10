@@ -28,3 +28,7 @@ Projekt został uruchomiony na zestawie z rodziny Nucleo. Użyte technologie:
 
 <img width="1152" height="2048" alt="image" src="https://github.com/user-attachments/assets/94d286d9-6038-4d56-a408-ce3aaae03dfa" />
 
+## Interfejs
+
+<img width="377" height="298" alt="image" src="https://github.com/user-attachments/assets/efb781d2-30be-4b83-972d-788c9fa757d3" />
+<img width="380" height="284" alt="image" src="https://github.com/user-attachments/assets/2c1e9d8c-3f2e-4e56-80f9-cdfc07b77cf2" />
